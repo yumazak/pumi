@@ -1,0 +1,57 @@
+name: Bug report
+description: Report something that is broken
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! Security issues should go through
+        [private reporting](https://github.com/yumazak/pumi/security/advisories/new) instead.
+  - type: input
+    id: version
+    attributes:
+      label: pumi version
+      description: The output of `pumi --version`
+      placeholder: "0.1.21"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: e.g. `~/.local/state/pumi/serve.log`
+      render: shell
+    validations:
+      required: false

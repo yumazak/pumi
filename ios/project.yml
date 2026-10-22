@@ -1,0 +1,44 @@
+name: Pumi
+options:
+  bundleIdPrefix: app.pumi
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/swift-markdown-ui
+    from: "2.4.1"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: C6BX48DMPR
+
+targets:
+  Pumi:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    dependencies:
+      - package: MarkdownUI
+        product: MarkdownUI
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: pumi
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # The simulator talks to the bridge on 127.0.0.1; a device uses the
+        # tailnet HTTPS URL, which needs no exception.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.pumi.Pumi
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1"

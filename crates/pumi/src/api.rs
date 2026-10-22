@@ -1,0 +1,947 @@
+//! The loopback HTTP API the PWA talks to.
+//!
+//! pumi binds `127.0.0.1` only and lets one front door (`tailscale serve`)
+//! proxy it. Everything here is a thin, authenticated pass-through to the
+//! opencode service, plus the event relay and Web Push.
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, post};
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, broadcast};
+use tokio_stream::{StreamExt, wrappers::BroadcastStream};
+
+use crate::opencode::OpencodeClient;
+use crate::push::{self, Notification, PushStore, Subscription};
+
+/// How long a discovered opencode client is trusted before re-discovering. The
+/// service picks a fresh port when it restarts.
+const DISCOVERY_TTL: Duration = Duration::from_secs(30);
+
+/// Session page size for the cross-project list. Older sessions arrive through
+/// the `cursor` page token as the client scrolls. The service caps a page at 20.
+const SESSIONS_PAGE: u32 = 20;
+
+struct Inner {
+    opencode: Mutex<Option<(Instant, OpencodeClient)>>,
+    events: broadcast::Sender<serde_json::Value>,
+    push: Arc<PushStore>,
+}
+
+/// The served state: the opencode client cache, the event fan-out, and the
+/// push store.
+#[derive(Clone)]
+pub struct AppState {
+    inner: Arc<Inner>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                opencode: Mutex::new(None),
+                events: broadcast::channel(1024).0,
+                push: Arc::new(PushStore::load()),
+            }),
+        }
+    }
+
+    /// The opencode service client, re-discovered at most every 30 seconds.
+    async fn opencode(&self) -> Result<OpencodeClient, ApiError> {
+        let mut slot = self.inner.opencode.lock().await;
+        if let Some((discovered_at, client)) = slot.as_ref()
+            && discovered_at.elapsed() < DISCOVERY_TTL
+        {
+            return Ok(client.clone());
+        }
+        let client = OpencodeClient::discover()
+            .map_err(|error| ApiError::internal("opencode", error.to_string()))?;
+        *slot = Some((Instant::now(), client.clone()));
+        Ok(client)
+    }
+
+    fn subscribe_events(&self) -> broadcast::Receiver<serde_json::Value> {
+        self.inner.events.subscribe()
+    }
+
+    fn broadcast_event(&self, value: serde_json::Value) {
+        // No subscribers is not an error.
+        let _ = self.inner.events.send(value);
+    }
+
+    fn push(&self) -> Arc<PushStore> {
+        self.inner.push.clone()
+    }
+}
+
+/// Build the router. `static_dir` is served as a fallback when present (the
+/// built PWA); without it the API is all there is.
+pub fn router(state: AppState, static_dir: Option<PathBuf>) -> Router {
+    let app = Router::new()
+        .route("/api/sessions", get(oc_sessions))
+        .route("/api/projects", get(oc_projects))
+        .route("/api/skills", get(oc_skills))
+        .route("/api/events", get(oc_events))
+        .route("/api/sessions/{id}/messages", get(oc_messages))
+        .route(
+            "/api/sessions/{id}",
+            get(oc_session).delete(oc_delete_session),
+        )
+        .route("/api/sessions/{id}/prompt", post(oc_prompt))
+        .route("/api/sessions/{id}/inbox", get(oc_inbox))
+        .route(
+            "/api/sessions/{id}/inbox/{inbox_id}",
+            delete(oc_cancel_inbox),
+        )
+        .route("/api/sessions/{id}/interrupt", post(oc_interrupt))
+        .route("/api/sessions/{id}/view", post(oc_view))
+        .route("/api/sessions/{id}/permissions", get(oc_permissions))
+        .route("/api/sessions/{id}/forms", get(oc_forms))
+        .route(
+            "/api/sessions/{id}/permissions/{request_id}/reply",
+            post(oc_permission_reply),
+        )
+        .route(
+            "/api/sessions/{id}/forms/{form_id}/reply",
+            post(oc_form_reply),
+        )
+        .route("/api/push/key", get(push_key))
+        .route("/api/push/subscribe", post(push_subscribe))
+        .route("/api/push/test", post(push_test))
+        .with_state(state);
+
+    let app = if let Some(dir) = static_dir {
+        let index = dir.join("index.html");
+        app.fallback_service(
+            tower_http::services::ServeDir::new(dir)
+                .fallback(tower_http::services::ServeFile::new(index)),
+        )
+    } else {
+        serve_embedded(app)
+    };
+
+    // API responses must never be cached. The phone re-reads them constantly,
+    // and Safari otherwise serves a stale copy — the session list would look
+    // current while an opened session showed older messages. Static assets are
+    // handled separately in `web.rs`.
+    app.layer(middleware::from_fn(no_store_api))
+}
+
+/// Mark every `/api/*` response `no-store`, so no browser caches live data.
+async fn no_store_api(request: Request, next: Next) -> Response {
+    let is_api = request.uri().path().starts_with("/api/");
+    let mut response = next.run(request).await;
+    if is_api {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    response
+}
+
+/// Attach the embedded PWA when the build has one.
+#[cfg(has_web)]
+fn serve_embedded(app: Router) -> Router {
+    app.fallback(get(crate::web::serve))
+}
+
+#[cfg(not(has_web))]
+fn serve_embedded(app: Router) -> Router {
+    app
+}
+
+/// Bind the API, start the event relay, and serve until the process ends.
+///
+/// The bind address is the caller's; pumi itself only ever passes loopback.
+pub async fn serve(
+    state: AppState,
+    addr: SocketAddr,
+    static_dir: Option<PathBuf>,
+) -> std::io::Result<()> {
+    tokio::spawn(event_bridge(state.clone()));
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("pumi listening on http://{addr}");
+    axum::serve(listener, router(state, static_dir)).await
+}
+
+/// Follow the opencode event stream, fan it out to browser subscribers, and
+/// push the events that deserve a notification. It reconnects forever.
+async fn event_bridge(state: AppState) {
+    // Repository names, resolved once per session and per project. An execution
+    // event carries no `location` at all, and the events that do carry only a
+    // directory — a worktree's branch, not a repository — so every name comes
+    // from the session's project.
+    let mut names = RepositoryNames::default();
+    loop {
+        let client = match state.opencode().await {
+            Ok(client) => client,
+            Err(_) => {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                continue;
+            }
+        };
+        let response = match client.events().await {
+            Ok(response) => response,
+            Err(_) => {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                continue;
+            }
+        };
+        tracing::info!("opencode event stream connected");
+
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        while let Some(chunk) = stream.next().await {
+            let Ok(bytes) = chunk else { break };
+            buffer.push_str(&String::from_utf8_lossy(&bytes));
+            for value in drain_sse(&mut buffer) {
+                if let Some(notification) =
+                    notification_for_event(&value, &client, &mut names).await
+                {
+                    let store = state.push();
+                    tokio::spawn(async move {
+                        push::broadcast(&store, &notification).await;
+                    });
+                }
+                state.broadcast_event(value);
+            }
+        }
+        tracing::warn!("opencode event stream ended; reconnecting");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// Pull complete `data:` frames out of an SSE buffer.
+fn drain_sse(buffer: &mut String) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    while let Some(position) = buffer.find("\n\n") {
+        let frame: String = buffer.drain(..position + 2).collect();
+        let mut data = String::new();
+        for line in frame.lines() {
+            if let Some(rest) = line.strip_prefix("data:") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(rest.trim_start());
+            }
+        }
+        if data.is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) {
+            out.push(value);
+        }
+    }
+    out
+}
+
+// ── opencode pass-through ────────────────────────────────────────────────────
+
+fn oc_error(error: crate::opencode::OpencodeError) -> ApiError {
+    ApiError::internal("opencode", error.to_string())
+}
+
+/// One page of the cross-project session list. `?cursor=` fetches the next
+/// page; the service's own page token is passed straight back to the client so
+/// it can page without knowing the shape. Each running session carries
+/// `active: true`, so the client can mark it without a second request.
+#[derive(Debug, Deserialize)]
+struct SessionsQuery {
+    cursor: Option<String>,
+}
+
+async fn oc_sessions(
+    State(state): State<AppState>,
+    Query(query): Query<SessionsQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = state.opencode().await?;
+    let value = client
+        .sessions(SESSIONS_PAGE, query.cursor.as_deref())
+        .await
+        .map_err(oc_error)?;
+    let mut sessions = value.get("data").cloned().unwrap_or_else(|| json!([]));
+
+    // A failure here just means nothing is marked running; the list still comes
+    // back.
+    if let Ok(active) = client.active_sessions().await
+        && let Some(running) = active.get("data").and_then(|data| data.as_object())
+        && let Some(list) = sessions.as_array_mut()
+    {
+        for session in list {
+            if let Some(id) = session.get("id").and_then(|value| value.as_str())
+                && running.contains_key(id)
+            {
+                session["active"] = json!(true);
+            }
+        }
+    }
+
+    // Pending confirmations (permissions, forms), so the list can flag a
+    // session that is waiting on the user. Also location-scoped, so this asks
+    // once per directory on the page.
+    let pending = pending_by_session(&client, &sessions).await;
+    if let Some(list) = sessions.as_array_mut() {
+        for session in list {
+            if let Some(id) = session.get("id").and_then(|value| value.as_str()) {
+                session["pending"] = match pending.get(id) {
+                    Some(Pending::Permission) => json!("permission"),
+                    Some(Pending::Form) => json!("form"),
+                    None => Value::Null,
+                };
+            }
+        }
+    }
+
+    Ok(Json(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "sessions": sessions,
+        "cursor": value.get("cursor").cloned().unwrap_or(serde_json::Value::Null),
+    })))
+}
+
+/// A session blocked on the user: a permission prompt or a form.
+#[derive(Clone, Copy)]
+enum Pending {
+    Permission,
+    Form,
+}
+
+/// The pending confirmation for each session on a page, by session id. opencode
+/// scopes permissions and forms by location (the directory a session runs in),
+/// so this asks once per distinct directory, concurrently. A lookup that fails
+/// — a directory the service no longer knows — simply contributes nothing.
+async fn pending_by_session(client: &OpencodeClient, sessions: &Value) -> HashMap<String, Pending> {
+    let mut directories: Vec<String> = Vec::new();
+    if let Some(list) = sessions.as_array() {
+        for session in list {
+            if let Some(directory) = session
+                .get("location")
+                .and_then(|location| location.get("directory"))
+                .and_then(Value::as_str)
+                && !directories.iter().any(|known| known == directory)
+            {
+                directories.push(directory.to_string());
+            }
+        }
+    }
+
+    let mut tasks = Vec::with_capacity(directories.len());
+    for directory in directories {
+        let client = client.clone();
+        tasks.push(tokio::spawn(async move {
+            pending_for_directory(&client, &directory).await
+        }));
+    }
+
+    let mut pending = HashMap::new();
+    for task in tasks {
+        for (id, kind) in task.await.unwrap_or_default() {
+            // A session lives in one directory, so this only decides the odd
+            // case of both pending at once; the permission wins.
+            pending.entry(id).or_insert(kind);
+        }
+    }
+    pending
+}
+
+/// The pending permissions and forms raised in one directory, as session ids.
+async fn pending_for_directory(client: &OpencodeClient, directory: &str) -> Vec<(String, Pending)> {
+    let mut found = Vec::new();
+    if let Ok(value) = client.pending_permissions(directory).await {
+        collect_sessions(&value, Pending::Permission, &mut found);
+    }
+    if let Ok(value) = client.pending_forms(directory).await {
+        collect_sessions(&value, Pending::Form, &mut found);
+    }
+    found
+}
+
+/// Pull the `sessionID` of each item in a list response into `out`.
+fn collect_sessions(value: &Value, kind: Pending, out: &mut Vec<(String, Pending)>) {
+    let Some(items) = value.get("data").and_then(Value::as_array) else {
+        return;
+    };
+    for item in items {
+        if let Some(id) = item.get("sessionID").and_then(Value::as_str) {
+            out.push((id.to_string(), kind));
+        }
+    }
+}
+
+/// Every project, each named by its repository. opencode groups the worktrees
+/// of one repository under a single project, so the session list can group by
+/// repository instead of by directory. The repository name is the basename of
+/// the project's main checkout — the worktree opencode lists without a
+/// `strategy`; a worktree's own basename is its branch, not a repository name.
+async fn oc_projects(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let client = state.opencode().await?;
+    let value = client.projects().await.map_err(oc_error)?;
+    let projects = value.as_array().cloned().unwrap_or_default();
+
+    // Resolving a name costs one worktree call per project; run them together.
+    // A failed lookup is not fatal: the canonical directory still names it.
+    let mut tasks = Vec::with_capacity(projects.len());
+    for project in &projects {
+        let client = client.clone();
+        let id = project
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let canonical = project
+            .get("canonical")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        tasks.push(tokio::spawn(async move {
+            let base = client
+                .worktrees(&id)
+                .await
+                .ok()
+                .and_then(|value| main_checkout(&value));
+            (id, canonical, base)
+        }));
+    }
+
+    let mut out = Vec::with_capacity(projects.len());
+    for task in tasks {
+        let (id, canonical, base) = task.await.unwrap_or_default();
+        let name = base
+            .as_deref()
+            .and_then(basename)
+            .or_else(|| basename(&canonical))
+            .unwrap_or_else(|| canonical.clone());
+        out.push(json!({
+            "id": id,
+            "name": name,
+            "base": base,
+            "canonical": canonical,
+        }));
+    }
+
+    Ok(Json(json!({ "projects": out })))
+}
+
+/// The main checkout in a `/api/worktree` list: the entry without a `strategy`.
+fn main_checkout(value: &Value) -> Option<String> {
+    value.as_array()?.iter().find_map(|entry| {
+        if entry.get("strategy").is_some() {
+            return None;
+        }
+        entry
+            .get("directory")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+}
+
+/// The directory a session runs in. Skills are scoped to it, so the client
+/// passes the session's `location.directory`; without one the service falls
+/// back to its own default location.
+#[derive(Debug, Deserialize)]
+struct SkillsQuery {
+    directory: Option<String>,
+}
+
+/// The skills registered for a project, so the composer can offer them. Each
+/// item is opencode's `Skill.Info`; the client only needs `id`, `name`, and
+/// `description`.
+async fn oc_skills(
+    State(state): State<AppState>,
+    Query(query): Query<SkillsQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = state.opencode().await?;
+    Ok(Json(
+        client
+            .skills(query.directory.as_deref())
+            .await
+            .map_err(oc_error)?,
+    ))
+}
+
+/// Server-sent events, forwarded from the opencode service. `?session=` narrows
+/// to one session; without it every event is forwarded.
+#[derive(Debug, Deserialize)]
+struct EventsQuery {
+    session: Option<String>,
+}
+
+async fn oc_events(
+    State(state): State<AppState>,
+    Query(query): Query<EventsQuery>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let receiver = state.subscribe_events();
+    let filter = query.session;
+    let stream = BroadcastStream::new(receiver).filter_map(move |result| {
+        let value = result.ok()?;
+        if let Some(session) = &filter {
+            let session_id = value
+                .get("data")
+                .and_then(|data| data.get("sessionID"))
+                .and_then(|value| value.as_str());
+            if session_id != Some(session.as_str()) {
+                return None;
+            }
+        }
+        let data = serde_json::to_string(&value).ok()?;
+        Some(Ok(Event::default().event("oc").data(data)))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+#[derive(Debug, Deserialize)]
+struct MessagesQuery {
+    /// How many messages to return, newest first. The phone fetches a small
+    /// slice while it polls and the full history when it opens a session.
+    limit: Option<u32>,
+    /// opencode's page token for older messages, passed straight through.
+    cursor: Option<String>,
+}
+
+async fn oc_messages(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<MessagesQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let limit = query.limit.unwrap_or(200).clamp(1, 200);
+    let client = state.opencode().await?;
+    Ok(Json(
+        client
+            .messages(&id, limit, query.cursor.as_deref())
+            .await
+            .map_err(oc_error)?,
+    ))
+}
+
+/// One session, by id.
+async fn oc_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = state.opencode().await?;
+    Ok(Json(client.session(&id).await.map_err(oc_error)?))
+}
+
+/// Delete a session and its child sessions. Destructive and irreversible.
+async fn oc_delete_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = state.opencode().await?;
+    Ok(Json(client.delete_session(&id).await.map_err(oc_error)?))
+}
+
+#[derive(Debug, Deserialize)]
+struct PromptBody {
+    text: String,
+    /// opencode `FileAttachment`s (`{ uri, name? }`).
+    #[serde(default)]
+    files: Vec<serde_json::Value>,
+    /// opencode `Prompt.SkillAttachment`s (`{ id }`).
+    #[serde(default)]
+    skills: Vec<serde_json::Value>,
+    /// `Session.Inbox.Delivery`: `queue` waits for the running turn, `steer`
+    /// interrupts it. Absent on an idle session.
+    #[serde(default)]
+    delivery: Option<String>,
+}
+
+async fn oc_prompt(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PromptBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = state.opencode().await?;
+    Ok(Json(
+        client
+            .prompt(
+                &id,
+                &body.text,
+                &body.files,
+                &body.skills,
+                body.delivery.as_deref(),
+            )
+            .await
+            .map_err(oc_error)?,
+    ))
+}
+
+/// A session's inbox: prompts admitted while a turn was in flight, waiting for
+/// it to finish. Shared with every other opencode client, so the phone shows
+/// the service's queue rather than one of its own.
+async fn oc_inbox(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = state.opencode().await?;
+    Ok(Json(client.inbox(&id).await.map_err(oc_error)?))
+}
+
+/// Drop one pending prompt from a session's inbox.
+async fn oc_cancel_inbox(
+    State(state): State<AppState>,
+    Path((id, inbox_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = state.opencode().await?;
+    Ok(Json(
+        client
+            .cancel_inbox(&id, &inbox_id)
+            .await
+            .map_err(oc_error)?,
+    ))
+}
+
+/// Interrupt the running turn.
+async fn oc_interrupt(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = state.opencode().await?;
+    Ok(Json(client.interrupt_session(&id).await.map_err(oc_error)?))
+}
+
+/// Mark a session's latest observed idle transition as viewed, so it reads as
+/// "read" in the list. The client sends the `time.idle` it displayed.
+#[derive(Debug, Deserialize)]
+struct ViewBody {
+    idle: f64,
+}
+
+async fn oc_view(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ViewBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = state.opencode().await?;
+    Ok(Json(
+        client
+            .view_session(&id, body.idle)
+            .await
+            .map_err(oc_error)?,
+    ))
+}
+
+async fn oc_permissions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = state.opencode().await?;
+    Ok(Json(client.permissions(&id).await.map_err(oc_error)?))
+}
+
+async fn oc_forms(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = state.opencode().await?;
+    Ok(Json(client.forms(&id).await.map_err(oc_error)?))
+}
+
+#[derive(Debug, Deserialize)]
+struct PermissionReplyBody {
+    decision: String,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+async fn oc_permission_reply(
+    State(state): State<AppState>,
+    Path((id, request_id)): Path<(String, String)>,
+    Json(body): Json<PermissionReplyBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = state.opencode().await?;
+    Ok(Json(
+        client
+            .reply_permission(&id, &request_id, &body.decision, body.message.as_deref())
+            .await
+            .map_err(oc_error)?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+struct FormReplyBody {
+    answer: serde_json::Value,
+}
+
+async fn oc_form_reply(
+    State(state): State<AppState>,
+    Path((id, form_id)): Path<(String, String)>,
+    Json(body): Json<FormReplyBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = state.opencode().await?;
+    Ok(Json(
+        client
+            .reply_form(&id, &form_id, body.answer)
+            .await
+            .map_err(oc_error)?,
+    ))
+}
+
+// ── Web Push ─────────────────────────────────────────────────────────────────
+
+async fn push_key(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!({ "publicKey": state.push().public_key() }))
+}
+
+#[derive(Debug, Deserialize)]
+struct SubscribeBody {
+    endpoint: String,
+    keys: SubscribeKeys,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubscribeKeys {
+    p256dh: String,
+    auth: String,
+}
+
+async fn push_subscribe(
+    State(state): State<AppState>,
+    Json(body): Json<SubscribeBody>,
+) -> Json<serde_json::Value> {
+    state.push().subscribe(Subscription {
+        endpoint: body.endpoint,
+        keys: crate::push::SubscriptionKeys {
+            p256dh: body.keys.p256dh,
+            auth: body.keys.auth,
+        },
+    });
+    Json(json!({ "ok": true }))
+}
+
+async fn push_test(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let store = state.push();
+    let subscriptions = store.subscriptions().len();
+    let notification = Notification {
+        title: "pumi".to_string(),
+        body: "テスト通知です。".to_string(),
+        session_id: None,
+        tag: "pumi-test".to_string(),
+    };
+    tokio::spawn(async move {
+        push::broadcast(&store, &notification).await;
+    });
+    Json(json!({ "ok": true, "subscriptions": subscriptions }))
+}
+
+/// The notification a blocking event deserves, or `None` for everything else.
+async fn notification_for_event(
+    value: &serde_json::Value,
+    client: &OpencodeClient,
+    names: &mut RepositoryNames,
+) -> Option<Notification> {
+    let kind = value.get("type")?.as_str()?;
+    let data = value.get("data")?;
+    let session_id = data
+        .get("sessionID")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+
+    let project = match &session_id {
+        Some(id) => names.for_session(client, id).await,
+        None => FALLBACK_PROJECT.to_string(),
+    };
+
+    match kind {
+        "permission.asked" => {
+            let action = data
+                .get("action")
+                .and_then(|value| value.as_str())
+                .unwrap_or("permission");
+            let resources = data
+                .get("resources")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            Some(Notification {
+                title: format!("{project} · {action} の許可待ち"),
+                body: if resources.is_empty() {
+                    "許可を求めて待機中".to_string()
+                } else {
+                    resources
+                },
+                session_id,
+                tag: "pumi-permission".to_string(),
+            })
+        }
+        "form.created" => Some(Notification {
+            title: format!("{project} · 質問"),
+            body: data
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or("回答を待っています")
+                .to_string(),
+            session_id,
+            tag: "pumi-form".to_string(),
+        }),
+        // A turn finished. Per-session tag, so several turns collapse into the
+        // latest one instead of stacking.
+        "session.execution.succeeded" => Some(Notification {
+            title: format!("{project} · 完了"),
+            body: "応答が完了しました".to_string(),
+            session_id: session_id.clone(),
+            tag: format!("pumi-done-{}", session_id.as_deref().unwrap_or("session")),
+        }),
+        "session.execution.failed" => Some(Notification {
+            title: format!("{project} · 失敗"),
+            body: "実行が失敗しました".to_string(),
+            session_id: session_id.clone(),
+            tag: format!("pumi-fail-{}", session_id.as_deref().unwrap_or("session")),
+        }),
+        _ => None,
+    }
+}
+
+/// The project name a notification falls back to when nothing else resolves.
+const FALLBACK_PROJECT: &str = "opencode";
+
+/// The repository a session belongs to, for notifications. opencode groups the
+/// worktrees of one repository under a single `projectID`, and the repository is
+/// named by its main checkout — the worktree listed without a `strategy`. Both
+/// answers are cached: a session is named once, and every session in a project
+/// after the first reuses the project's name.
+#[derive(Default)]
+struct RepositoryNames {
+    /// session id → repository name.
+    sessions: HashMap<String, String>,
+    /// project id → repository name.
+    projects: HashMap<String, String>,
+}
+
+impl RepositoryNames {
+    /// The repository name for a session, resolved lazily and cached.
+    async fn for_session(&mut self, client: &OpencodeClient, session_id: &str) -> String {
+        if let Some(name) = self.sessions.get(session_id) {
+            return name.clone();
+        }
+        let name = self.resolve_session(client, session_id).await;
+        self.sessions.insert(session_id.to_string(), name.clone());
+        name
+    }
+
+    /// One session's project, then that project's repository name. The session's
+    /// own directory is used only if the project is somehow unnameable.
+    async fn resolve_session(&mut self, client: &OpencodeClient, session_id: &str) -> String {
+        let Ok(value) = client.session(session_id).await else {
+            return FALLBACK_PROJECT.to_string();
+        };
+        let data = value.get("data").unwrap_or(&value);
+        let directory = data
+            .get("location")
+            .and_then(|location| location.get("directory"))
+            .and_then(Value::as_str);
+        match data.get("projectID").and_then(Value::as_str) {
+            Some(project_id) => self.resolve_project(client, project_id, directory).await,
+            None => directory
+                .and_then(basename)
+                .unwrap_or_else(|| FALLBACK_PROJECT.to_string()),
+        }
+    }
+
+    /// The repository name for a project, resolved lazily and cached.
+    async fn resolve_project(
+        &mut self,
+        client: &OpencodeClient,
+        project_id: &str,
+        directory: Option<&str>,
+    ) -> String {
+        if let Some(name) = self.projects.get(project_id) {
+            return name.clone();
+        }
+        let name = client
+            .worktrees(project_id)
+            .await
+            .ok()
+            .and_then(|value| main_checkout(&value))
+            .and_then(|base| basename(&base))
+            .or_else(|| directory.and_then(basename))
+            .unwrap_or_else(|| FALLBACK_PROJECT.to_string());
+        self.projects.insert(project_id.to_string(), name.clone());
+        name
+    }
+}
+
+/// The last path segment, ignoring a trailing slash.
+fn basename(path: &str) -> Option<String> {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+}
+
+/// A JSON error body: a stable `code` the phone translates, and a message.
+pub struct ApiError {
+    status: StatusCode,
+    code: &'static str,
+    message: String,
+}
+
+impl ApiError {
+    fn internal(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            Json(json!({ "code": self.code, "message": self.message })),
+        )
+            .into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The main checkout is the entry without a `strategy`. Worktrees carry
+    /// `"strategy": "git"` and must not be mistaken for it, however they are
+    /// ordered in the list.
+    #[test]
+    fn main_checkout_skips_worktrees() {
+        let list = json!([
+            { "directory": "/repo/.herdr/wt/a", "strategy": "git" },
+            { "directory": "/repo" },
+            { "directory": "/repo/.herdr/wt/b", "strategy": "git" },
+        ]);
+        assert_eq!(main_checkout(&list).as_deref(), Some("/repo"));
+    }
+
+    /// A project that only ever saw worktrees has no main checkout to name.
+    #[test]
+    fn main_checkout_is_none_without_a_base() {
+        let list = json!([{ "directory": "/repo/wt", "strategy": "git" }]);
+        assert_eq!(main_checkout(&list), None);
+    }
+}

@@ -1,0 +1,259 @@
+// opencode v2 wire types.
+//
+// Mirrored from the service's own schemas (`packages/schema/src/*` in
+// anomalyco/opencode @ v2.0.16), so a field that exists upstream exists here.
+// The bridge passes the API's JSON through, so these are the service's shapes,
+// not a reinterpretation.
+
+/** `Model.Ref`. */
+export interface OcModel {
+  id?: string;
+  providerID?: string;
+  variant?: string;
+}
+
+/** `Session.Info.time`. */
+export interface OcTime {
+  created?: number;
+  updated?: number;
+  idle?: number;
+  viewed?: number;
+  archived?: number;
+}
+
+/** `Location.Ref`. */
+export interface OcLocation {
+  directory?: string;
+  [key: string]: unknown;
+}
+
+export type OcOutcome = "succeeded" | "failed" | "interrupted";
+
+/** `Session.Info` — one session, across every project. */
+export interface OcSession {
+  id: string;
+  parentID?: string;
+  projectID?: string;
+  agent?: string;
+  model?: OcModel;
+  title?: string;
+  /** Outcome of the last completed execution, recorded at `time.idle`. */
+  outcome?: OcOutcome;
+  time?: OcTime;
+  location?: OcLocation;
+  subpath?: string;
+  metadata?: Record<string, unknown>;
+  cost?: number;
+  /** True while a turn is in flight (merged from `/api/session/active`). */
+  active?: boolean;
+  /** Set while the session waits on the user: a permission prompt or a form
+   *  (merged from the location's pending permissions/forms). */
+  pending?: "permission" | "form" | null;
+}
+
+/** One project (repository), as pumi's `/api/projects` names it. */
+export interface OcProject {
+  id: string;
+  /** The repository name: the main checkout's basename. */
+  name?: string;
+  /** The main checkout's directory, when opencode lists one. */
+  base?: string | null;
+  canonical?: string;
+}
+
+/** The service's opaque page token; `next` fetches older sessions. */
+export interface OcCursor {
+  previous?: string | null;
+  next?: string | null;
+}
+
+export interface OcSessionsResponse {
+  version: string;
+  sessions: OcSession[];
+  cursor?: OcCursor | null;
+}
+
+/** `Session.Message.ToolState`. `input` is raw text while `status` is streaming. */
+export interface OcToolState {
+  status?: string;
+  input?: unknown;
+  content?: Array<{ type: string; text?: string }>;
+  error?: unknown;
+  metadata?: unknown;
+}
+
+/** `Session.Message.AssistantContent`. */
+export type OcContentPart =
+  | { type: "text"; text?: string }
+  | {
+      type: "reasoning";
+      text?: string;
+      time?: { created?: number; completed?: number };
+    }
+  | {
+      type: "tool";
+      id?: string;
+      name?: string;
+      executed?: boolean;
+      state?: OcToolState;
+      time?: { created?: number; ran?: number; completed?: number };
+    };
+
+/** `Prompt.FileAttachment`. */
+export interface OcFileAttachment {
+  uri: string;
+  name?: string;
+  description?: string;
+}
+
+/** `Prompt.SkillAttachment` — a skill attached to a user message. */
+export interface OcSkillAttachment {
+  id: string;
+  name?: string;
+  /** The inlined skill body, present once the service has expanded it. */
+  text?: string;
+}
+
+/** `Skill.Info` — one registered skill, as `/api/skill` returns it. */
+export interface OcSkill {
+  id: string;
+  name?: string;
+  description?: string;
+  /** False hides the skill from the model's available list. */
+  autoinvoke?: boolean;
+  path?: string;
+  content?: string;
+}
+
+/** `Session.Message.Info`. `type` discriminates: `user`, `assistant`, `idle`, … */
+export interface OcMessage {
+  id: string;
+  type: string;
+  time?: OcTime;
+  metadata?: Record<string, unknown>;
+  /** `user` */
+  text?: string;
+  files?: OcFileAttachment[];
+  agents?: unknown[];
+  skills?: OcSkillAttachment[];
+  /** `assistant` */
+  agent?: string;
+  model?: OcModel;
+  content?: OcContentPart[];
+  cost?: number;
+  error?: unknown;
+  /** `idle` */
+  outcome?: OcOutcome;
+  /** `skill` — the body the service inlined when a skill was loaded. */
+  skill?: string;
+  name?: string;
+}
+
+export interface OcMessagesResponse {
+  data: OcMessage[];
+  cursor?: OcCursor | null;
+}
+
+/** `Session.Inbox.User` — a prompt admitted while a turn was in flight.
+ *  `payload.text` is what the composer showed; the item waits in the inbox
+ *  until the running turn finishes (or is dropped). */
+export interface OcInboxItem {
+  id: string;
+  sessionID?: string;
+  /** `user`, `synthetic`, `compaction`, or `move`. Only `user` is shown. */
+  type: string;
+  time?: OcTime;
+  /** How the service will treat it: wait (`queue`) or interrupt (`steer`). */
+  delivery?: "steer" | "queue";
+  payload?: {
+    text?: string;
+    files?: OcFileAttachment[];
+    skills?: OcSkillAttachment[];
+  };
+}
+
+/** `Permission.Source` — the tool call a permission request gates. */
+export interface OcPermissionSource {
+  type: "tool";
+  messageID: string;
+  /** The id of the tool call inside that message. */
+  id: string;
+}
+
+/** `Permission.Request`. */
+export interface OcPermission {
+  id: string;
+  sessionID: string;
+  action: string;
+  resources: string[];
+  save?: string[];
+  metadata?: Record<string, unknown>;
+  message?: string;
+  source?: OcPermissionSource;
+}
+
+/** `Form.When` — all conditions on a field must hold (AND). */
+export interface OcFormWhen {
+  key: string;
+  op: "eq" | "neq";
+  value: string | number | boolean;
+}
+
+/** `Form.Option`. */
+export interface OcFormOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+/** `Form.Field` (the union, flattened). */
+export interface OcFormField {
+  key: string;
+  type: "string" | "number" | "integer" | "boolean" | "multiselect" | "external" | string;
+  title?: string;
+  description?: string;
+  required?: boolean;
+  /** Upstream: skip the interactive prompt and use the default unless answered. */
+  hidden?: boolean;
+  when?: OcFormWhen[];
+  /** `string` */
+  format?: "email" | "uri" | "date" | "date-time";
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  placeholder?: string;
+  /** `string` (with options) and `multiselect` */
+  options?: OcFormOption[];
+  custom?: boolean;
+  minItems?: number;
+  maxItems?: number;
+  /** `number` / `integer` */
+  minimum?: number;
+  maximum?: number;
+  /** `external` */
+  url?: string;
+  default?: string | number | boolean | string[];
+}
+
+/** The tool call a form belongs to (opencode ties them together). */
+export interface OcFormToolRef {
+  messageID?: string;
+  /** The id of the tool call; matches the tool part's `toolCallId`. */
+  id?: string;
+}
+
+export interface OcFormMetadata {
+  /** `"question"` when the form backs the `question` tool. */
+  kind?: string;
+  tool?: OcFormToolRef;
+  [key: string]: unknown;
+}
+
+/** A pending form (`Form.Info`), opencode v2's ask-the-user mechanism. */
+export interface OcForm {
+  id: string;
+  sessionID: string;
+  title?: string;
+  metadata?: OcFormMetadata;
+  fields: OcFormField[];
+}

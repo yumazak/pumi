@@ -1,0 +1,28 @@
+[package]
+name = "pumi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "iOS app and bridge for the agents running on an opencode server, over Tailscale"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing-subscriber = { workspace = true }
+axum = "0.8"
+tower-http = { version = "0.7", features = ["fs"] }
+reqwest = { version = "0.13", features = ["json", "query", "stream"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+web-push = "0.11"
+p256 = "0.14"
+base64 = "0.23"
+getrandom = { version = "0.4", features = ["sys_rng"] }
+include_dir = "0.7"
+mime_guess = "2"

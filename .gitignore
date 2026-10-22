@@ -1,0 +1,15 @@
+/target
+node_modules/
+dist/
+.vite/
+*.log
+.DS_Store
+
+# iOS: XcodeGen generates the project; builds stay local
+ios/Pumi.xcodeproj/
+ios/build/
+ios/build-device/
+ios/DerivedData/
+ios/.swiftpm/
+ios/Sources/Info.plist
+*.xcuserstate
