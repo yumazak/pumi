@@ -1,10 +1,25 @@
 import MarkdownUI
+import PhotosUI
 import SwiftUI
+import UIKit
+import UniformTypeIdentifiers
 
 struct MessageView: View {
     let message: OcMessage
 
     var body: some View {
+        content
+            .contextMenu {
+                Button {
+                    UIPasteboard.general.string = copyText
+                } label: {
+                    Label("コピー", systemImage: "doc.on.doc")
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch message.type {
         case "user":
             UserBubble(text: userText)
@@ -18,6 +33,19 @@ struct MessageView: View {
             }
         default:
             EmptyView()
+        }
+    }
+
+    private var copyText: String {
+        switch message.type {
+        case "user":
+            return userText
+        case "assistant":
+            return (message.content ?? []).compactMap(\.text)
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n")
+        default:
+            return message.text ?? ""
         }
     }
 
@@ -362,12 +390,72 @@ struct FormCard: View {
     }
 }
 
+struct AttachmentChips: View {
+    @Bindable var model: ChatModel
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(model.attachedSkills) { skill in
+                    chip("🧩 \(skill.name ?? skill.id)") {
+                        model.removeSkill(skill)
+                    }
+                }
+                ForEach(model.attachments) { file in
+                    chip("📎 \(file.name)") {
+                        model.removeAttachment(file)
+                    }
+                }
+            }
+        }
+    }
+
+    private func chip(_ label: String, remove: @escaping () -> Void) -> some View {
+        HStack(spacing: 4) {
+            Text(label).font(.caption)
+            Button(action: remove) {
+                Image(systemName: "xmark.circle.fill").font(.caption2)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(.quaternary.opacity(0.5), in: Capsule())
+    }
+}
+
 struct Composer: View {
     @Bindable var model: ChatModel
     @FocusState.Binding var focused: Bool
 
+    @State private var showPhotos = false
+    @State private var showFiles = false
+    @State private var showSkills = false
+    @State private var photoItems: [PhotosPickerItem] = []
+    @State private var skills: [OcSkill] = []
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            Menu {
+                Button { showPhotos = true } label: {
+                    Label("写真", systemImage: "photo")
+                }
+                Button { showFiles = true } label: {
+                    Label("ファイル", systemImage: "doc")
+                }
+            } label: {
+                Image(systemName: "plus.circle").font(.system(size: 26))
+            }
+            .accessibilityLabel("添付")
+
+            Button {
+                showSkills = true
+            } label: {
+                Image(systemName: "sparkles").font(.system(size: 20))
+            }
+            .accessibilityLabel("スキル")
+
             TextField("返信を入力…", text: $model.draft, axis: .vertical)
                 .focused($focused)
                 .lineLimit(1...6)
@@ -377,16 +465,65 @@ struct Composer: View {
                     .quaternary.opacity(0.5),
                     in: RoundedRectangle(cornerRadius: 18)
                 )
+
+            if model.running {
+                Button {
+                    Task { await model.interrupt() }
+                } label: {
+                    Image(systemName: "stop.circle.fill")
+                        .font(.system(size: 30))
+                }
+                .accessibilityLabel("停止")
+            }
+
             Button {
                 Task { await model.send() }
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 30))
             }
+            .accessibilityLabel("送信")
             .disabled(
-                model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                (model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && model.attachments.isEmpty)
                     || model.sending
             )
+        }
+        .photosPicker(
+            isPresented: $showPhotos,
+            selection: $photoItems,
+            maxSelectionCount: 10,
+            matching: .images
+        )
+        .fileImporter(
+            isPresented: $showFiles,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            guard case let .success(urls) = result else { return }
+            for url in urls {
+                if let file = try? Attachment.file(url) {
+                    model.addAttachment(file)
+                }
+            }
+        }
+        .onChange(of: photoItems) { _, items in
+            guard !items.isEmpty else { return }
+            Task {
+                for item in items {
+                    if let file = try? await Attachment.photo(item) {
+                        model.addAttachment(file)
+                    }
+                }
+                photoItems = []
+            }
+        }
+        .sheet(isPresented: $showSkills) {
+            SkillPickerView(model: model, skills: skills)
+        }
+        .onChange(of: showSkills) { _, open in
+            guard open else { return }
+            Task { skills = await model.availableSkills() }
         }
     }
 }

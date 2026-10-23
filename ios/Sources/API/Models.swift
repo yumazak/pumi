@@ -3,18 +3,18 @@ import Foundation
 // The wire shapes the bridge passes through from opencode. Only the fields the
 // app renders are modelled.
 
-struct OcTime: Decodable {
+struct OcTime: Decodable, Hashable {
     var created: Double?
     var updated: Double?
     var idle: Double?
     var viewed: Double?
 }
 
-struct OcLocation: Decodable {
+struct OcLocation: Decodable, Hashable {
     var directory: String?
 }
 
-struct OcSession: Decodable, Identifiable {
+struct OcSession: Decodable, Identifiable, Hashable {
     var id: String
     var title: String?
     var agent: String?
@@ -29,6 +29,7 @@ struct OcSession: Decodable, Identifiable {
 struct OcSessionsResponse: Decodable {
     var version: String?
     var sessions: [OcSession]
+    var cursor: OcCursor?
 }
 
 struct OcProject: Decodable, Identifiable {
@@ -62,9 +63,10 @@ struct OcFile: Decodable {
     var name: String?
 }
 
-struct OcSkill: Decodable {
-    var id: String?
+struct OcSkill: Decodable, Identifiable, Hashable {
+    var id: String
     var name: String?
+    var description: String?
 }
 
 struct OcMessage: Decodable, Identifiable {
@@ -133,4 +135,11 @@ struct OcEventData: Decodable {
     var ordinal: Int?
     var delta: String?
     var text: String?
+}
+
+/// An attachment to send with a prompt: a `data:` URI and the name to show.
+struct PromptFile: Identifiable, Hashable {
+    let id = UUID()
+    let uri: String
+    let name: String
 }

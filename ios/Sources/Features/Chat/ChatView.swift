@@ -15,7 +15,7 @@ struct ChatView: View {
             .navigationTitle(model.session.title ?? "セッション")
             .navigationBarTitleDisplayMode(.inline)
             .task { await model.start() }
-            .onDisappear { model.stop() }
+            .onDisappear { model.stopListening() }
             .alert(
                 "エラー",
                 isPresented: Binding(
@@ -98,6 +98,9 @@ struct ChatView: View {
             if !model.inbox.isEmpty { InboxBar(model: model) }
             if !model.permissions.isEmpty { PermissionBar(model: model) }
             if !model.forms.isEmpty { FormBar(model: model) }
+            if !model.attachments.isEmpty || !model.attachedSkills.isEmpty {
+                AttachmentChips(model: model)
+            }
             Composer(model: model, focused: $composerFocused)
         }
         .padding(.horizontal, 12)

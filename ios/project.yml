@@ -36,6 +36,10 @@ targets:
         # tailnet HTTPS URL, which needs no exception.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        CFBundleURLTypes:
+          - CFBundleURLName: app.pumi.Pumi
+            CFBundleURLSchemes:
+              - pumi
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.pumi.Pumi

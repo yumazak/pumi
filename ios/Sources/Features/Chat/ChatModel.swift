@@ -21,6 +21,8 @@ final class ChatModel {
     var draft = ""
     var sending = false
     var pendingUserText: String?
+    var attachments: [PromptFile] = []
+    var attachedSkills: [OcSkill] = []
 
     private var events: Task<Void, Never>?
     private var textBuffer = ""
@@ -38,7 +40,7 @@ final class ChatModel {
         events = Task { await listen() }
     }
 
-    func stop() {
+    func stopListening() {
         events?.cancel()
         events = nil
     }
@@ -80,15 +82,25 @@ final class ChatModel {
     /// it starts a turn and gets a local stand-in until the server has it.
     func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !sending else { return }
+        guard !text.isEmpty || !attachments.isEmpty, !sending else { return }
         sending = true
         defer { sending = false }
+        let files = attachments
+        let skills = attachedSkills
         let delivery = running ? "queue" : nil
         do {
-            try await client.prompt(session.id, text: text, delivery: delivery)
+            try await client.prompt(
+                session.id,
+                text: text,
+                files: files,
+                skills: skills,
+                delivery: delivery
+            )
             draft = ""
+            attachments = []
+            attachedSkills = []
             if delivery == nil {
-                pendingUserText = text
+                pendingUserText = note(text, files: files, skills: skills)
                 await refreshMessages()
             } else {
                 await refreshInbox()
@@ -96,6 +108,46 @@ final class ChatModel {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    func interrupt() async {
+        do {
+            try await client.interrupt(session.id)
+            await refreshMessages()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func addAttachment(_ file: PromptFile) {
+        attachments.append(file)
+    }
+
+    func removeAttachment(_ file: PromptFile) {
+        attachments.removeAll { $0.id == file.id }
+    }
+
+    func toggleSkill(_ skill: OcSkill) {
+        if let index = attachedSkills.firstIndex(where: { $0.id == skill.id }) {
+            attachedSkills.remove(at: index)
+        } else {
+            attachedSkills.append(skill)
+        }
+    }
+
+    func removeSkill(_ skill: OcSkill) {
+        attachedSkills.removeAll { $0.id == skill.id }
+    }
+
+    func availableSkills() async -> [OcSkill] {
+        (try? await client.skills(directory: session.location?.directory)) ?? []
+    }
+
+    private func note(_ text: String, files: [PromptFile], skills: [OcSkill]) -> String {
+        var lines = [text]
+        lines += skills.map { "🧩 \($0.name ?? $0.id)" }
+        lines += files.map { "📎 \($0.name)" }
+        return lines.filter { !$0.isEmpty }.joined(separator: "\n")
     }
 
     func cancelInbox(_ item: OcInboxItem) async {

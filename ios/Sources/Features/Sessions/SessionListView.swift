@@ -4,9 +4,10 @@ struct SessionListView: View {
     @Environment(Settings.self) private var settings
     @State private var model = SessionListModel()
     @State private var showSettings = false
+    @State private var path: [OcSession] = []
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             content
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -19,12 +20,33 @@ struct SessionListView: View {
                     }
                 }
                 .sheet(isPresented: $showSettings) { SettingsView() }
+                .navigationDestination(for: OcSession.self) { session in
+                    if let client = settings.client {
+                        ChatView(session: session, client: client)
+                    }
+                }
                 .task(id: settings.baseURLText) {
                     await model.load(client: settings.client)
                 }
                 .refreshable {
                     await model.load(client: settings.client)
                 }
+        }
+        .onOpenURL { url in
+            Task { await open(url) }
+        }
+    }
+
+    /// `pumi://sessions/<id>` from a notification. A session that is not on the
+    /// loaded page is fetched by id before pushing.
+    private func open(_ url: URL) async {
+        guard url.scheme == "pumi", url.host == "sessions",
+              let id = url.pathComponents.dropFirst().first,
+              let client = settings.client else { return }
+        if let session = model.sessions.first(where: { $0.id == id }) {
+            path = [session]
+        } else if let session = try? await client.session(id) {
+            path = [session]
         }
     }
 
@@ -56,14 +78,21 @@ struct SessionListView: View {
                 ForEach(model.groups) { group in
                     Section(group.name) {
                         ForEach(group.sessions) { session in
-                            NavigationLink {
-                                if let client = settings.client {
-                                    ChatView(session: session, client: client)
-                                }
-                            } label: {
+                            NavigationLink(value: session) {
                                 SessionRow(session: session)
                             }
                         }
+                    }
+                }
+                if model.hasMore {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                    .listRowSeparator(.hidden)
+                    .onAppear {
+                        Task { await model.loadMore(client: settings.client) }
                     }
                 }
             }

@@ -62,15 +62,30 @@ struct PumiClient {
         try check(response, data)
     }
 
-    func sessions() async throws -> [OcSession] {
-        let response: OcSessionsResponse = try await get("/api/sessions")
-        return response.sessions
+    func sessions(cursor: String? = nil) async throws -> OcSessionsResponse {
+        var query: [URLQueryItem] = []
+        if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        return try await get("/api/sessions", query: query)
+    }
+
+    func session(_ sessionID: String) async throws -> OcSession {
+        struct Response: Decodable { var data: OcSession }
+        let response: Response = try await get("/api/sessions/\(sessionID)")
+        return response.data
     }
 
     func projects() async throws -> [OcProject] {
         struct Response: Decodable { var projects: [OcProject] }
         let response: Response = try await get("/api/projects")
         return response.projects
+    }
+
+    func skills(directory: String?) async throws -> [OcSkill] {
+        struct Response: Decodable { var data: [OcSkill] }
+        var query: [URLQueryItem] = []
+        if let directory { query.append(URLQueryItem(name: "directory", value: directory)) }
+        let response: Response = try await get("/api/skills", query: query)
+        return response.data
     }
 
     func messages(
@@ -83,10 +98,26 @@ struct PumiClient {
         return try await get("/api/sessions/\(sessionID)/messages", query: query)
     }
 
-    func prompt(_ sessionID: String, text: String, delivery: String?) async throws {
+    func prompt(
+        _ sessionID: String,
+        text: String,
+        files: [PromptFile] = [],
+        skills: [OcSkill] = [],
+        delivery: String?
+    ) async throws {
         var body: [String: Any] = ["text": text]
         if let delivery { body["delivery"] = delivery }
+        if !files.isEmpty {
+            body["files"] = files.map { ["uri": $0.uri, "name": $0.name] }
+        }
+        if !skills.isEmpty {
+            body["skills"] = skills.map { ["id": $0.id] }
+        }
         try await post("/api/sessions/\(sessionID)/prompt", body: body)
+    }
+
+    func interrupt(_ sessionID: String) async throws {
+        try await post("/api/sessions/\(sessionID)/interrupt", body: [:])
     }
 
     func inbox(_ sessionID: String) async throws -> [OcInboxItem] {
