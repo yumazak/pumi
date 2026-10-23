@@ -8,7 +8,7 @@ struct SessionListView: View {
     var body: some View {
         NavigationStack {
             content
-                .navigationTitle("pumi")
+                .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
@@ -37,7 +37,8 @@ struct SessionListView: View {
                 ContentUnavailableView {
                     Label("読み込めません", systemImage: "wifi.exclamationmark")
                 } description: {
-                    Text(error)
+                    Text("\(settings.baseURLText)\n\n\(error)")
+                        .textSelection(.enabled)
                 } actions: {
                     Button("再試行") {
                         Task { await model.load(client: settings.client) }
