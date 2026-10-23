@@ -41,11 +41,12 @@ struct UserBubble: View {
 
     var body: some View {
         Text(text)
+            .foregroundStyle(.white)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(
-                Color.accentColor.opacity(0.2),
-                in: RoundedRectangle(cornerRadius: 14)
+                Color.accentColor,
+                in: RoundedRectangle(cornerRadius: 18)
             )
             .frame(maxWidth: .infinity, alignment: .trailing)
             .textSelection(.enabled)
@@ -358,10 +359,12 @@ struct FormCard: View {
 
 struct Composer: View {
     @Bindable var model: ChatModel
+    @FocusState.Binding var focused: Bool
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             TextField("返信を入力…", text: $model.draft, axis: .vertical)
+                .focused($focused)
                 .lineLimit(1...6)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)

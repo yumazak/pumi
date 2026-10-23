@@ -2,31 +2,31 @@ import SwiftUI
 
 struct ChatView: View {
     @State private var model: ChatModel
+    @FocusState private var composerFocused: Bool
 
     init(session: OcSession, client: PumiClient) {
         _model = State(initialValue: ChatModel(session: session, client: client))
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            messageList
-            footer
-        }
-        .navigationTitle(model.session.title ?? "セッション")
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await model.start() }
-        .onDisappear { model.stop() }
-        .alert(
-            "エラー",
-            isPresented: Binding(
-                get: { model.error != nil },
-                set: { if !$0 { model.error = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) { model.error = nil }
-        } message: {
-            Text(model.error ?? "")
-        }
+        messageList
+            .background(Color(.systemBackground))
+            .safeAreaInset(edge: .bottom, spacing: 0) { footer }
+            .navigationTitle(model.session.title ?? "セッション")
+            .navigationBarTitleDisplayMode(.inline)
+            .task { await model.start() }
+            .onDisappear { model.stop() }
+            .alert(
+                "エラー",
+                isPresented: Binding(
+                    get: { model.error != nil },
+                    set: { if !$0 { model.error = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) { model.error = nil }
+            } message: {
+                Text(model.error ?? "")
+            }
     }
 
     private var messageList: some View {
@@ -73,6 +73,12 @@ struct ChatView: View {
             }
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
+            .onChange(of: composerFocused) { _, focused in
+                guard focused else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            }
             .onChange(of: model.messages.count) { _, _ in
                 withAnimation(.easeOut(duration: 0.15)) {
                     proxy.scrollTo("bottom", anchor: .bottom)
@@ -92,10 +98,12 @@ struct ChatView: View {
             if !model.inbox.isEmpty { InboxBar(model: model) }
             if !model.permissions.isEmpty { PermissionBar(model: model) }
             if !model.forms.isEmpty { FormBar(model: model) }
-            Composer(model: model)
+            Composer(model: model, focused: $composerFocused)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+        .background(Color(.systemBackground))
+        .overlay(alignment: .top) { Divider() }
     }
 }
