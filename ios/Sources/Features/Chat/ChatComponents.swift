@@ -66,7 +66,7 @@ struct AssistantMessage: View {
                     ToolView(part: part)
                 default:
                     if let text = part.text, !text.isEmpty {
-                        Markdown(text).markdownTheme(.gitHub)
+                        Markdown(text).markdownTheme(.pumi)
                     }
                 }
             }
