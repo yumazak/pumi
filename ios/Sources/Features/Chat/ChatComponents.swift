@@ -1,7 +1,6 @@
 import MarkdownUI
 import PhotosUI
 import SwiftUI
-import UIKit
 import UniformTypeIdentifiers
 
 struct MessageView: View {
@@ -9,13 +8,7 @@ struct MessageView: View {
 
     var body: some View {
         content
-            .contextMenu {
-                Button {
-                    UIPasteboard.general.string = copyText
-                } label: {
-                    Label("コピー", systemImage: "doc.on.doc")
-                }
-            }
+            .textSelection(.enabled)
     }
 
     @ViewBuilder
@@ -33,19 +26,6 @@ struct MessageView: View {
             }
         default:
             EmptyView()
-        }
-    }
-
-    private var copyText: String {
-        switch message.type {
-        case "user":
-            return userText
-        case "assistant":
-            return (message.content ?? []).compactMap(\.text)
-                .filter { !$0.isEmpty }
-                .joined(separator: "\n\n")
-        default:
-            return message.text ?? ""
         }
     }
 
