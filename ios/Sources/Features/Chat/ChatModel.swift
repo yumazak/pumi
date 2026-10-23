@@ -23,6 +23,9 @@ final class ChatModel {
     var pendingUserText: String?
 
     private var events: Task<Void, Never>?
+    private var textBuffer = ""
+    private var reasoningBuffer = ""
+    private var flushTask: Task<Void, Never>?
 
     init(session: OcSession, client: PumiClient) {
         self.session = session
@@ -173,20 +176,38 @@ final class ChatModel {
              "session.execution.interrupted":
             running = false
         case "session.text.started":
+            flushTask?.cancel()
+            flushTask = nil
+            textBuffer = ""
             liveText = ""
         case "session.text.delta":
-            liveText += event.data?.delta ?? ""
+            textBuffer += event.data?.delta ?? ""
+            scheduleFlush()
         case "session.text.ended":
-            liveText = event.data?.text ?? liveText
+            flushTask?.cancel()
+            flushTask = nil
+            textBuffer = event.data?.text ?? textBuffer
+            liveText = textBuffer
         case "session.reasoning.started":
+            flushTask?.cancel()
+            flushTask = nil
+            reasoningBuffer = ""
             liveReasoning = ""
         case "session.reasoning.delta":
-            liveReasoning += event.data?.delta ?? ""
+            reasoningBuffer += event.data?.delta ?? ""
+            scheduleFlush()
         case "session.reasoning.ended":
-            liveReasoning = event.data?.text ?? liveReasoning
+            flushTask?.cancel()
+            flushTask = nil
+            reasoningBuffer = event.data?.text ?? reasoningBuffer
+            liveReasoning = reasoningBuffer
         case "session.step.ended":
             Task {
                 await refreshMessages()
+                flushTask?.cancel()
+                flushTask = nil
+                textBuffer = ""
+                reasoningBuffer = ""
                 liveText = ""
                 liveReasoning = ""
                 pendingUserText = nil
@@ -201,6 +222,19 @@ final class ChatModel {
             } else if type.hasPrefix("permission.") || type.hasPrefix("form.") {
                 Task { await refreshDock() }
             }
+        }
+    }
+
+    /// Deltas arrive many times a second; applying every one re-renders the
+    /// transcript constantly. Coalesce them into ~12 updates a second.
+    private func scheduleFlush() {
+        guard flushTask == nil else { return }
+        flushTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(80))
+            guard let self, !Task.isCancelled else { return }
+            self.liveText = self.textBuffer
+            self.liveReasoning = self.reasoningBuffer
+            self.flushTask = nil
         }
     }
 }
