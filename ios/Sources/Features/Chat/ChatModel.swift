@@ -68,7 +68,7 @@ final class ChatModel {
             )
             merge(page.data)
             cursor = page.cursor?.next
-            self.inbox = inbox
+            self.inbox = inbox.filter { $0.delivery != "steer" }
             self.permissions = permissions
             self.forms = forms
             error = nil
@@ -214,7 +214,10 @@ final class ChatModel {
     }
 
     private func refreshInbox() async {
-        if let items = try? await client.inbox(session.id) { inbox = items }
+        if let items = try? await client.inbox(session.id) {
+            // A `steer` item is delivered immediately; only `queue` waits.
+            inbox = items.filter { $0.delivery != "steer" }
+        }
     }
 
     private func refreshDock() async {

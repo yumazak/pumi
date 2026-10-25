@@ -227,10 +227,14 @@ struct InboxBar: View {
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(8)
+                .padding(10)
                 .background(
-                    .quaternary.opacity(0.4),
-                    in: RoundedRectangle(cornerRadius: 10)
+                    Color(.tertiarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 12)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(.white.opacity(0.08))
                 )
             }
         }
