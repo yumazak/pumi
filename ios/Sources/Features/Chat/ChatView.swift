@@ -16,8 +16,13 @@ struct ChatView: View {
         messageList
             .background(Color(.systemBackground))
             .overlay(alignment: .bottom) { footer }
+            .overlay {
+                if model.loading && model.messages.isEmpty {
+                    ProgressView()
+                }
+            }
             .onPreferenceChange(FooterHeightKey.self) { footerHeight = $0 }
-            .navigationTitle(model.session.title ?? "セッション")
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .task { await model.start() }
             .onDisappear { model.stopListening() }
@@ -72,10 +77,9 @@ struct ChatView: View {
                         ProgressView().frame(maxWidth: .infinity)
                     }
                     ForEach(model.messages) { message in
-                        MessageView(message: message) { text in
-                            partialCopy = PartialCopyText(text: text)
-                        }
-                        .id(message.id)
+                        MessageView(message: message, partialCopy: $partialCopy)
+                            .equatable()
+                            .id(message.id)
                     }
                     if let pending = model.pendingUserText {
                         UserBubble(text: pending).id("pending")
@@ -100,7 +104,18 @@ struct ChatView: View {
             }
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
-            .contentMargins(.bottom, footerHeight + 16, for: .scrollContent)
+            .contentMargins(.bottom, footerHeight + 44, for: .scrollContent)
+            #if DEBUG
+            .onAppear {
+                // UI check: start scrolled away from the bottom.
+                guard ProcessInfo.processInfo.environment["PUMI_SCROLL_TOP"] == "1" else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    if let first = model.messages.first?.id {
+                        proxy.scrollTo(first, anchor: .top)
+                    }
+                }
+            }
+            #endif
             .overlay(alignment: .bottomTrailing) {
                 if !atBottom {
                     Button {

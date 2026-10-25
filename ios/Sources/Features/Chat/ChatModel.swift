@@ -35,9 +35,11 @@ final class ChatModel {
     }
 
     func start() async {
-        await reload()
         guard events == nil else { return }
+        // Connect first so a turn that starts while the history loads is not
+        // missed.
         events = Task { await listen() }
+        await reload()
     }
 
     func stopListening() {
@@ -57,12 +59,18 @@ final class ChatModel {
         loading = messages.isEmpty
         defer { loading = false }
         do {
-            let page = try await client.messages(session.id, limit: 40)
+            async let pageTask = client.messages(session.id, limit: 40)
+            async let inboxTask = client.inbox(session.id)
+            async let permissionsTask = client.permissions(session.id)
+            async let formsTask = client.forms(session.id)
+            let (page, inbox, permissions, forms) = try await (
+                pageTask, inboxTask, permissionsTask, formsTask
+            )
             merge(page.data)
             cursor = page.cursor?.next
-            inbox = try await client.inbox(session.id)
-            permissions = try await client.permissions(session.id)
-            forms = try await client.forms(session.id)
+            self.inbox = inbox
+            self.permissions = permissions
+            self.forms = forms
             error = nil
         } catch {
             self.error = error.localizedDescription

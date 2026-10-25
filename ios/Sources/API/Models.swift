@@ -41,17 +41,17 @@ struct OcCursor: Decodable {
     var next: String?
 }
 
-struct OcToolContent: Decodable {
+struct OcToolContent: Decodable, Equatable {
     var type: String?
     var text: String?
 }
 
-struct OcToolState: Decodable {
+struct OcToolState: Decodable, Equatable {
     var status: String?
     var content: [OcToolContent]?
 }
 
-struct OcContentPart: Decodable {
+struct OcContentPart: Decodable, Equatable {
     var type: String
     var text: String?
     var name: String?
@@ -59,7 +59,7 @@ struct OcContentPart: Decodable {
     var state: OcToolState?
 }
 
-struct OcFile: Decodable {
+struct OcFile: Decodable, Equatable {
     var name: String?
 }
 
@@ -69,7 +69,7 @@ struct OcSkill: Decodable, Identifiable, Hashable {
     var description: String?
 }
 
-struct OcMessage: Decodable, Identifiable {
+struct OcMessage: Decodable, Identifiable, Equatable {
     var id: String
     var type: String
     var time: OcTime?

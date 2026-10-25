@@ -4,9 +4,13 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-struct MessageView: View {
+struct MessageView: View, Equatable {
     let message: OcMessage
-    var onPartialCopy: ((String) -> Void)? = nil
+    @Binding var partialCopy: PartialCopyText?
+
+    static func == (lhs: MessageView, rhs: MessageView) -> Bool {
+        lhs.message == rhs.message
+    }
 
     var body: some View {
         content
@@ -16,12 +20,10 @@ struct MessageView: View {
                 } label: {
                     Label("コピー", systemImage: "doc.on.doc")
                 }
-                if let onPartialCopy {
-                    Button {
-                        onPartialCopy(copyText)
-                    } label: {
-                        Label("部分コピー", systemImage: "text.cursor")
-                    }
+                Button {
+                    partialCopy = PartialCopyText(text: copyText)
+                } label: {
+                    Label("部分コピー", systemImage: "text.cursor")
                 }
             }
     }
