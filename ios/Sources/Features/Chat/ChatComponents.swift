@@ -442,73 +442,53 @@ struct Composer: View {
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var skills: [OcSkill] = []
 
+    /// Collapsed while idle, expanded once the field has focus or content.
+    private var expanded: Bool {
+        focused || !model.draft.isEmpty || !model.attachments.isEmpty
+    }
+
     private var canSend: Bool {
         !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !model.attachments.isEmpty
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: expanded ? 10 : 0) {
             TextField("pumi に聞く", text: $model.draft, axis: .vertical)
                 .focused($focused)
-                .lineLimit(1...8)
+                .lineLimit(expanded ? 1...8 : 1...1)
+                .padding(.leading, expanded ? 0 : 40)
+                .padding(.trailing, expanded ? 0 : (model.running ? 96 : 56))
 
-            HStack(spacing: 18) {
-                Menu {
-                    Button { showPhotos = true } label: {
-                        Label("写真", systemImage: "photo")
-                    }
-                    Button { showFiles = true } label: {
-                        Label("ファイル", systemImage: "doc")
-                    }
-                } label: {
-                    Image(systemName: "plus").font(.system(size: 20, weight: .medium))
+            if expanded {
+                HStack(spacing: 18) {
+                    attachButton
+                    skillButton
+                    Spacer()
+                    stopButton
+                    sendButton
                 }
-                .accessibilityLabel("添付")
-
-                Button {
-                    showSkills = true
-                } label: {
-                    Image(systemName: "sparkles").font(.system(size: 18))
-                }
-                .accessibilityLabel("スキル")
-
-                Spacer()
-
-                if model.running {
-                    Button {
-                        Task { await model.interrupt() }
-                    } label: {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 32, height: 32)
-                            .background(Circle().fill(.secondary))
-                    }
-                    .accessibilityLabel("停止")
-                }
-
-                Button {
-                    Task { await model.send() }
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 32, height: 32)
-                        .background(Circle().fill(Color.accentColor))
-                }
-                .disabled(!canSend || model.sending)
-                .opacity(canSend && !model.sending ? 1 : 0.35)
-                .accessibilityLabel("送信")
             }
-            .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, expanded ? 10 : 12)
         .background(
             Color(.secondarySystemBackground),
-            in: RoundedRectangle(cornerRadius: 24)
+            in: RoundedRectangle(cornerRadius: expanded ? 24 : 28)
         )
+        .overlay(alignment: .leading) {
+            if !expanded { attachButton.padding(.leading, 14) }
+        }
+        .overlay(alignment: .trailing) {
+            if !expanded {
+                HStack(spacing: 12) {
+                    stopButton
+                    sendButton
+                }
+                .padding(.trailing, 14)
+            }
+        }
+        .animation(.snappy(duration: 0.18), value: expanded)
         .photosPicker(
             isPresented: $showPhotos,
             selection: $photoItems,
@@ -545,5 +525,63 @@ struct Composer: View {
             guard open else { return }
             Task { skills = await model.availableSkills() }
         }
+    }
+
+    private var attachButton: some View {
+        Menu {
+            Button { showPhotos = true } label: {
+                Label("写真", systemImage: "photo")
+            }
+            Button { showFiles = true } label: {
+                Label("ファイル", systemImage: "doc")
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityLabel("添付")
+    }
+
+    private var skillButton: some View {
+        Button {
+            showSkills = true
+        } label: {
+            Image(systemName: "sparkles")
+                .font(.system(size: 18))
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityLabel("スキル")
+    }
+
+    @ViewBuilder
+    private var stopButton: some View {
+        if model.running {
+            Button {
+                Task { await model.interrupt() }
+            } label: {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(.secondary))
+            }
+            .accessibilityLabel("停止")
+        }
+    }
+
+    private var sendButton: some View {
+        Button {
+            Task { await model.send() }
+        } label: {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(Color.accentColor))
+        }
+        .disabled(!canSend || model.sending)
+        .opacity(canSend && !model.sending ? 1 : 0.35)
+        .accessibilityLabel("送信")
     }
 }
