@@ -4,6 +4,8 @@ struct ChatView: View {
     @State private var model: ChatModel
     @FocusState private var composerFocused: Bool
     @State private var partialCopy: PartialCopyText?
+    @State private var footerHeight: CGFloat = 0
+    @State private var atBottom = true
     @Environment(\.scenePhase) private var scenePhase
 
     init(session: OcSession, client: PumiClient) {
@@ -13,7 +15,8 @@ struct ChatView: View {
     var body: some View {
         messageList
             .background(Color(.systemBackground))
-            .safeAreaInset(edge: .bottom, spacing: 0) { footer }
+            .overlay(alignment: .bottom) { footer }
+            .onPreferenceChange(FooterHeightKey.self) { footerHeight = $0 }
             .navigationTitle(model.session.title ?? "セッション")
             .navigationBarTitleDisplayMode(.inline)
             .task { await model.start() }
@@ -86,13 +89,35 @@ struct ChatView: View {
                         )
                         .id("live")
                     }
-                    Color.clear.frame(height: 1).id("bottom")
+                    Color.clear
+                        .frame(height: 1)
+                        .id("bottom")
+                        .onAppear { atBottom = true }
+                        .onDisappear { atBottom = false }
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
             }
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
+            .contentMargins(.bottom, footerHeight + 16, for: .scrollContent)
+            .overlay(alignment: .bottomTrailing) {
+                if !atBottom {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 32, height: 32)
+                            .background(.regularMaterial, in: Circle())
+                    }
+                    .padding(.trailing, 16)
+                    .padding(.bottom, footerHeight + 8)
+                    .accessibilityLabel("一番下へ")
+                }
+            }
             .onChange(of: composerFocused) { _, focused in
                 guard focused else { return }
                 withAnimation(.easeOut(duration: 0.2)) {
@@ -100,14 +125,17 @@ struct ChatView: View {
                 }
             }
             .onChange(of: model.messages.count) { _, _ in
+                guard atBottom else { return }
                 withAnimation(.easeOut(duration: 0.15)) {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
             .onChange(of: model.liveText) { _, _ in
+                guard atBottom else { return }
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
             .onChange(of: model.liveReasoning) { _, _ in
+                guard atBottom else { return }
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
         }
@@ -126,6 +154,22 @@ struct ChatView: View {
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 8)
-        .background(Color(.systemBackground))
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: FooterHeightKey.self,
+                    value: proxy.size.height
+                )
+            }
+        )
+    }
+}
+
+/// The composer floats over the thread, so the transcript needs its height as
+/// bottom content margin and the glass has something to blur behind it.
+private struct FooterHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }

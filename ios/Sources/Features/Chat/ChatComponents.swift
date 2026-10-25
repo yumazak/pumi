@@ -588,7 +588,10 @@ private extension View {
     @ViewBuilder
     func composerCard(cornerRadius: CGFloat) -> some View {
         if #available(iOS 26.0, *) {
-            glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius))
+            glassEffect(
+                .regular.tint(.white.opacity(0.12)),
+                in: RoundedRectangle(cornerRadius: cornerRadius)
+            )
         } else {
             background(
                 Color(.tertiarySystemBackground),
