@@ -120,6 +120,9 @@ final class ChatModel {
             if delivery == nil {
                 pendingUserText = note(text, files: files, skills: skills)
                 await refreshMessages()
+                // The server has the message now; drop the stand-in even when
+                // its text differs from the stand-in (skills/files add notes).
+                pendingUserText = nil
             } else {
                 await refreshInbox()
             }
