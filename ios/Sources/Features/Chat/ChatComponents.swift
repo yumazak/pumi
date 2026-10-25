@@ -1,14 +1,42 @@
 import MarkdownUI
 import PhotosUI
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct MessageView: View {
     let message: OcMessage
+    var onPartialCopy: ((String) -> Void)? = nil
 
     var body: some View {
         content
-            .textSelection(.enabled)
+            .contextMenu {
+                Button {
+                    UIPasteboard.general.string = copyText
+                } label: {
+                    Label("コピー", systemImage: "doc.on.doc")
+                }
+                if let onPartialCopy {
+                    Button {
+                        onPartialCopy(copyText)
+                    } label: {
+                        Label("部分コピー", systemImage: "text.cursor")
+                    }
+                }
+            }
+    }
+
+    private var copyText: String {
+        switch message.type {
+        case "user":
+            return userText
+        case "assistant":
+            return (message.content ?? []).compactMap(\.text)
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n")
+        default:
+            return message.text ?? ""
+        }
     }
 
     @ViewBuilder
@@ -57,7 +85,6 @@ struct UserBubble: View {
                 in: RoundedRectangle(cornerRadius: 18)
             )
             .frame(maxWidth: .infinity, alignment: .trailing)
-            .textSelection(.enabled)
     }
 }
 

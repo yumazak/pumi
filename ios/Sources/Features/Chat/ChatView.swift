@@ -3,6 +3,7 @@ import SwiftUI
 struct ChatView: View {
     @State private var model: ChatModel
     @FocusState private var composerFocused: Bool
+    @State private var partialCopy: PartialCopyText?
 
     init(session: OcSession, client: PumiClient) {
         _model = State(initialValue: ChatModel(session: session, client: client))
@@ -26,6 +27,9 @@ struct ChatView: View {
                 Button("OK", role: .cancel) { model.error = nil }
             } message: {
                 Text(model.error ?? "")
+            }
+            .sheet(item: $partialCopy) { copy in
+                PartialCopyView(text: copy.text)
             }
     }
 
@@ -52,7 +56,10 @@ struct ChatView: View {
                         ProgressView().frame(maxWidth: .infinity)
                     }
                     ForEach(model.messages) { message in
-                        MessageView(message: message).id(message.id)
+                        MessageView(message: message) { text in
+                            partialCopy = PartialCopyText(text: text)
+                        }
+                        .id(message.id)
                     }
                     if let pending = model.pendingUserText {
                         UserBubble(text: pending).id("pending")
