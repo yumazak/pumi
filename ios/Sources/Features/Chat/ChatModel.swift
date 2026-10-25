@@ -23,6 +23,8 @@ final class ChatModel {
     var pendingUserText: String?
     var attachments: [PromptFile] = []
     var attachedSkills: [OcSkill] = []
+    /// When false, deltas are ignored and the reply lands on `step.ended`.
+    var streaming = true
 
     private var events: Task<Void, Never>?
     private var textBuffer = ""
@@ -240,7 +242,11 @@ final class ChatModel {
     }
 
     private func handle(_ event: OcEvent) {
-        switch event.type {
+        let type = event.type
+        if !streaming, type.hasPrefix("session.text.") || type.hasPrefix("session.reasoning.") {
+            return
+        }
+        switch type {
         case "session.execution.started":
             running = true
         case "session.execution.succeeded", "session.execution.failed",
@@ -284,7 +290,6 @@ final class ChatModel {
                 pendingUserText = nil
             }
         default:
-            let type = event.type
             if type.hasPrefix("session.inbox.") {
                 Task { await refreshInbox() }
                 if type == "session.inbox.delivered" {
@@ -301,7 +306,7 @@ final class ChatModel {
     private func scheduleFlush() {
         guard flushTask == nil else { return }
         flushTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(80))
+            try? await Task.sleep(for: .milliseconds(200))
             guard let self, !Task.isCancelled else { return }
             self.liveText = self.textBuffer
             self.liveReasoning = self.reasoningBuffer

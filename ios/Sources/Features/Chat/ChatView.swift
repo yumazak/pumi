@@ -9,6 +9,7 @@ struct ChatView: View {
     @State private var scrolledUp = false
     @State private var footerHeight: CGFloat = 0
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(Settings.self) private var settings
 
     init(session: OcSession, client: PumiClient) {
         _model = State(initialValue: ChatModel(session: session, client: client))
@@ -26,7 +27,13 @@ struct ChatView: View {
             .onPreferenceChange(FooterHeightKey.self) { footerHeight = $0 }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            .task { await model.start() }
+            .task {
+                model.streaming = settings.streaming
+                await model.start()
+            }
+            .onChange(of: settings.streaming) { _, value in
+                model.streaming = value
+            }
             .onDisappear { model.stopListening() }
             #if DEBUG
             // UI screenshots: PUMI_FOCUS_COMPOSER=1 opens with the composer expanded.
@@ -89,11 +96,7 @@ struct ChatView: View {
                     }
                     if model.running || !model.liveText.isEmpty
                         || !model.liveReasoning.isEmpty {
-                        LiveMessage(
-                            text: model.liveText,
-                            reasoning: model.liveReasoning,
-                            running: model.running
-                        )
+                        LiveMessage(text: model.liveText, running: model.running)
                         .id("live")
                     }
                     Color.clear.frame(height: footerHeight + 44)

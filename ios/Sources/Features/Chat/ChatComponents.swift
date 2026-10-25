@@ -170,12 +170,10 @@ struct ToolView: View {
 
 struct LiveMessage: View {
     let text: String
-    let reasoning: String
     let running: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !reasoning.isEmpty { ReasoningView(text: reasoning) }
             if text.isEmpty {
                 if running { ThinkingDots() }
             } else {
