@@ -117,6 +117,35 @@ struct ChatView: View {
                 }
             }
             #endif
+            .overlay(alignment: .bottomTrailing) {
+                if scrolledUp {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 36, height: 36)
+                            .background(.regularMaterial, in: Circle())
+                            .overlay(Circle().strokeBorder(.white.opacity(0.08)))
+                    }
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 10)
+                    .accessibilityLabel("一番下へ")
+                }
+            }
+            .onChange(of: model.loading) { _, loading in
+                // The first load settles at the end; an earlier transient must
+                // not leave the reader short of the bottom.
+                guard !loading else { return }
+                scrolledUp = false
+                DispatchQueue.main.async {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+            }
             .onChange(of: model.messages.count) { _, _ in
                 guard !scrolledUp else { return }
                 DispatchQueue.main.async {
@@ -170,7 +199,7 @@ private struct ScrollUpTracker: ViewModifier {
                 let atBottom = new.visibleRect.maxY >= new.contentSize.height - 40
                 if atBottom {
                     scrolledUp = false
-                } else if new.contentOffset.y < old.contentOffset.y - 1 {
+                } else if new.contentOffset.y < old.contentOffset.y - 20 {
                     scrolledUp = true
                 }
             }
