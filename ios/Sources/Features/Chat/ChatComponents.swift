@@ -442,60 +442,73 @@ struct Composer: View {
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var skills: [OcSkill] = []
 
+    private var canSend: Bool {
+        !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !model.attachments.isEmpty
+    }
+
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            Menu {
-                Button { showPhotos = true } label: {
-                    Label("写真", systemImage: "photo")
-                }
-                Button { showFiles = true } label: {
-                    Label("ファイル", systemImage: "doc")
-                }
-            } label: {
-                Image(systemName: "plus.circle").font(.system(size: 26))
-            }
-            .accessibilityLabel("添付")
-
-            Button {
-                showSkills = true
-            } label: {
-                Image(systemName: "sparkles").font(.system(size: 20))
-            }
-            .accessibilityLabel("スキル")
-
-            TextField("返信を入力…", text: $model.draft, axis: .vertical)
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("pumi に聞く", text: $model.draft, axis: .vertical)
                 .focused($focused)
-                .lineLimit(1...6)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    .quaternary.opacity(0.5),
-                    in: RoundedRectangle(cornerRadius: 18)
-                )
+                .lineLimit(1...8)
 
-            if model.running {
-                Button {
-                    Task { await model.interrupt() }
+            HStack(spacing: 18) {
+                Menu {
+                    Button { showPhotos = true } label: {
+                        Label("写真", systemImage: "photo")
+                    }
+                    Button { showFiles = true } label: {
+                        Label("ファイル", systemImage: "doc")
+                    }
                 } label: {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.system(size: 30))
+                    Image(systemName: "plus").font(.system(size: 20, weight: .medium))
                 }
-                .accessibilityLabel("停止")
-            }
+                .accessibilityLabel("添付")
 
-            Button {
-                Task { await model.send() }
-            } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 30))
+                Button {
+                    showSkills = true
+                } label: {
+                    Image(systemName: "sparkles").font(.system(size: 18))
+                }
+                .accessibilityLabel("スキル")
+
+                Spacer()
+
+                if model.running {
+                    Button {
+                        Task { await model.interrupt() }
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(Circle().fill(.secondary))
+                    }
+                    .accessibilityLabel("停止")
+                }
+
+                Button {
+                    Task { await model.send() }
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(Color.accentColor))
+                }
+                .disabled(!canSend || model.sending)
+                .opacity(canSend && !model.sending ? 1 : 0.35)
+                .accessibilityLabel("送信")
             }
-            .accessibilityLabel("送信")
-            .disabled(
-                (model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    && model.attachments.isEmpty)
-                    || model.sending
-            )
+            .foregroundStyle(.secondary)
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            Color(.secondarySystemBackground),
+            in: RoundedRectangle(cornerRadius: 24)
+        )
         .photosPicker(
             isPresented: $showPhotos,
             selection: $photoItems,
