@@ -173,12 +173,8 @@ struct LiveMessage: View {
             if text.isEmpty {
                 if running { ThinkingDots() }
             } else {
-                // Plain text while streaming: re-parsing Markdown on every delta
-                // makes code-block backgrounds flash and the layout jump. The
-                // finished message renders through Markdown.
-                Text(text)
+                Markdown(text).markdownTheme(.pumi)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
