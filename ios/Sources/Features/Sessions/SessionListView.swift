@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SessionListView: View {
     @Environment(Settings.self) private var settings
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model = SessionListModel()
     @State private var showSettings = false
     @State private var path: [OcSession] = []
@@ -27,6 +28,13 @@ struct SessionListView: View {
                 }
                 .task(id: settings.baseURLText) {
                     await model.load(client: settings.client)
+                    #if DEBUG
+                    // UI screenshots in the simulator: PUMI_SESSION=<id>
+                    // env var opens that session on launch.
+                    if let id = ProcessInfo.processInfo.environment["PUMI_SESSION"] {
+                        await openSession(id: id)
+                    }
+                    #endif
                 }
                 .refreshable {
                     await model.load(client: settings.client)
@@ -35,14 +43,22 @@ struct SessionListView: View {
         .onOpenURL { url in
             Task { await open(url) }
         }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await model.load(client: settings.client) }
+        }
     }
 
     /// `pumi://sessions/<id>` from a notification. A session that is not on the
     /// loaded page is fetched by id before pushing.
     private func open(_ url: URL) async {
         guard url.scheme == "pumi", url.host == "sessions",
-              let id = url.pathComponents.dropFirst().first,
-              let client = settings.client else { return }
+              let id = url.pathComponents.dropFirst().first else { return }
+        await openSession(id: id)
+    }
+
+    private func openSession(id: String) async {
+        guard let client = settings.client else { return }
         if let session = model.sessions.first(where: { $0.id == id }) {
             path = [session]
         } else if let session = try? await client.session(id) {

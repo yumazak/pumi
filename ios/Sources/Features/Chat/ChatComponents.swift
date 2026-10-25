@@ -472,10 +472,7 @@ struct Composer: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, expanded ? 10 : 12)
-        .background(
-            Color(.secondarySystemBackground),
-            in: RoundedRectangle(cornerRadius: expanded ? 24 : 28)
-        )
+        .composerCard(cornerRadius: expanded ? 24 : 28)
         .overlay(alignment: .leading) {
             if !expanded { attachButton.padding(.leading, 14) }
         }
@@ -583,5 +580,20 @@ struct Composer: View {
         .disabled(!canSend || model.sending)
         .opacity(canSend && !model.sending ? 1 : 0.35)
         .accessibilityLabel("送信")
+    }
+}
+
+private extension View {
+    /// Liquid Glass on iOS 26, and the flat card on older systems.
+    @ViewBuilder
+    func composerCard(cornerRadius: CGFloat) -> some View {
+        if #available(iOS 26.0, *) {
+            glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius))
+        } else {
+            background(
+                Color(.tertiarySystemBackground),
+                in: RoundedRectangle(cornerRadius: cornerRadius)
+            )
+        }
     }
 }

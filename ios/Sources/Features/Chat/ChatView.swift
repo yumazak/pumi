@@ -4,6 +4,7 @@ struct ChatView: View {
     @State private var model: ChatModel
     @FocusState private var composerFocused: Bool
     @State private var partialCopy: PartialCopyText?
+    @Environment(\.scenePhase) private var scenePhase
 
     init(session: OcSession, client: PumiClient) {
         _model = State(initialValue: ChatModel(session: session, client: client))
@@ -17,6 +18,14 @@ struct ChatView: View {
             .navigationBarTitleDisplayMode(.inline)
             .task { await model.start() }
             .onDisappear { model.stopListening() }
+            #if DEBUG
+            // UI screenshots: PUMI_FOCUS_COMPOSER=1 opens with the composer expanded.
+            .onAppear {
+                if ProcessInfo.processInfo.environment["PUMI_FOCUS_COMPOSER"] == "1" {
+                    composerFocused = true
+                }
+            }
+            #endif
             .alert(
                 "エラー",
                 isPresented: Binding(
@@ -30,6 +39,10 @@ struct ChatView: View {
             }
             .sheet(item: $partialCopy) { copy in
                 PartialCopyView(text: copy.text)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                Task { await model.resync() }
             }
     }
 

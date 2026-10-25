@@ -45,6 +45,14 @@ final class ChatModel {
         events = nil
     }
 
+    /// The app was in the background: the stream may be dead and messages may
+    /// have arrived from another client. Reload and reconnect.
+    func resync() async {
+        await reload()
+        events?.cancel()
+        events = Task { await listen() }
+    }
+
     func reload() async {
         loading = messages.isEmpty
         defer { loading = false }

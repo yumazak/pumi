@@ -184,17 +184,16 @@ struct PumiClient {
                     guard (200..<300).contains(http.statusCode) else {
                         throw PumiError.http(http.statusCode, "")
                     }
-                    var payload = ""
+                    // `AsyncLineSequence` drops blank lines, so the blank line
+                    // that ends an SSE frame never arrives. The bridge puts each
+                    // event on one `data:` line, so decode as it arrives.
                     for try await line in bytes.lines {
-                        if line.isEmpty {
-                            if let data = payload.data(using: .utf8),
-                               let event = try? JSONDecoder().decode(OcEvent.self, from: data) {
-                                continuation.yield(event)
-                            }
-                            payload = ""
-                        } else if line.hasPrefix("data:") {
-                            payload += line.dropFirst(5)
-                                .trimmingCharacters(in: .whitespaces)
+                        guard line.hasPrefix("data:") else { continue }
+                        let json = line.dropFirst(5)
+                            .trimmingCharacters(in: .whitespaces)
+                        if let data = json.data(using: .utf8),
+                           let event = try? JSONDecoder().decode(OcEvent.self, from: data) {
+                            continuation.yield(event)
                         }
                     }
                     continuation.finish()
