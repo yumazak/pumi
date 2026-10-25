@@ -31,6 +31,22 @@ final class SessionListModel {
         return order.map { Group(name: $0, sessions: byRepo[$0] ?? []) }
     }
 
+    /// The groups filtered by a query: a matching project name keeps the whole
+    /// group, otherwise only the sessions whose title, directory or agent match.
+    func groups(matching query: String) -> [Group] {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return groups }
+        return groups.compactMap { group in
+            if group.name.localizedCaseInsensitiveContains(text) { return group }
+            let matches = group.sessions.filter { session in
+                (session.title ?? "").localizedCaseInsensitiveContains(text)
+                    || (session.location?.directory ?? "").localizedCaseInsensitiveContains(text)
+                    || (session.agent ?? "").localizedCaseInsensitiveContains(text)
+            }
+            return matches.isEmpty ? nil : Group(name: group.name, sessions: matches)
+        }
+    }
+
     private func repo(for session: OcSession) -> String {
         if let id = session.projectID, let name = repoName[id] { return name }
         if let directory = session.location?.directory {

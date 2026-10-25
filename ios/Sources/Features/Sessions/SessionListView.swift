@@ -6,6 +6,7 @@ struct SessionListView: View {
     @State private var model = SessionListModel()
     @State private var showSettings = false
     @State private var path: [OcSession] = []
+    @State private var query = ""
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -21,6 +22,11 @@ struct SessionListView: View {
                     }
                 }
                 .sheet(isPresented: $showSettings) { SettingsView() }
+                .searchable(
+                    text: $query,
+                    placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: "プロジェクトを検索"
+                )
                 .navigationDestination(for: OcSession.self) { session in
                     if let client = settings.client {
                         ChatView(session: session, client: client)
@@ -89,9 +95,21 @@ struct SessionListView: View {
                     description: Text("opencode でセッションを作るとここに出ます")
                 )
             }
+        } else if filteredGroups.isEmpty, !query.isEmpty {
+            ContentUnavailableView {
+                Label("見つかりません", systemImage: "magnifyingglass")
+            } description: {
+                Text("読み込み済みの範囲に「\(query)」はありません")
+            } actions: {
+                if model.hasMore {
+                    Button("さらに読み込む") {
+                        Task { await model.loadMore(client: settings.client) }
+                    }
+                }
+            }
         } else {
             List {
-                ForEach(model.groups) { group in
+                ForEach(filteredGroups) { group in
                     Section(group.name) {
                         ForEach(group.sessions) { session in
                             NavigationLink(value: session) {
@@ -114,6 +132,10 @@ struct SessionListView: View {
             }
             .listStyle(.insetGrouped)
         }
+    }
+
+    private var filteredGroups: [SessionListModel.Group] {
+        model.groups(matching: query)
     }
 }
 
