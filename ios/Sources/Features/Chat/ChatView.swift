@@ -4,7 +4,10 @@ struct ChatView: View {
     @State private var model: ChatModel
     @FocusState private var composerFocused: Bool
     @State private var partialCopy: PartialCopyText?
-    @State private var atBottom = true
+    /// Set when the reader scrolls away from the bottom; cleared when they
+    /// return. Auto-follow stops while this is true.
+    @State private var scrolledUp = false
+    @State private var footerHeight: CGFloat = 0
     @Environment(\.scenePhase) private var scenePhase
 
     init(session: OcSession, client: PumiClient) {
@@ -14,12 +17,13 @@ struct ChatView: View {
     var body: some View {
         messageList
             .background(Color(.systemBackground))
-            .safeAreaInset(edge: .bottom, spacing: 0) { footer }
+            .overlay(alignment: .bottom) { footer }
             .overlay {
                 if model.loading && model.messages.isEmpty {
                     ProgressView()
                 }
             }
+            .onPreferenceChange(FooterHeightKey.self) { footerHeight = $0 }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .task { await model.start() }
@@ -56,9 +60,10 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    // The top sentinel pulls the previous page. Scrolling back
-                    // to the message the reader was on keeps the position.
-                    if model.cursor != nil {
+                    // Only once the reader has scrolled up: at first layout the
+                    // content can be short and this would pull an older page
+                    // and jump the thread backwards.
+                    if model.cursor != nil, scrolledUp {
                         Color.clear
                             .frame(height: 8)
                             .onAppear {
@@ -91,18 +96,16 @@ struct ChatView: View {
                         )
                         .id("live")
                     }
-                    Color.clear
-                        .frame(height: 1)
-                        .id("bottom")
-                        .onAppear { atBottom = true }
-                        .onDisappear { atBottom = false }
+                    Color.clear.frame(height: footerHeight + 44)
+                    Color.clear.frame(height: 1).id("bottom")
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
-                .padding(.bottom, 28)
+                .padding(.bottom, 12)
             }
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
+            .modifier(ScrollUpTracker(scrolledUp: $scrolledUp))
             #if DEBUG
             .onAppear {
                 // UI check: start scrolled away from the bottom.
@@ -115,7 +118,7 @@ struct ChatView: View {
             }
             #endif
             .overlay(alignment: .bottomTrailing) {
-                if !atBottom {
+                if scrolledUp {
                     Button {
                         withAnimation(.easeOut(duration: 0.2)) {
                             proxy.scrollTo("bottom", anchor: .bottom)
@@ -127,29 +130,37 @@ struct ChatView: View {
                             .background(.regularMaterial, in: Circle())
                     }
                     .padding(.trailing, 16)
-                    .padding(.bottom, 8)
+                    .padding(.bottom, footerHeight + 8)
                     .accessibilityLabel("一番下へ")
                 }
             }
             .onChange(of: model.messages.count) { _, _ in
-                guard atBottom else { return }
-                withAnimation(.easeOut(duration: 0.15)) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                guard !scrolledUp else { return }
+                DispatchQueue.main.async {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
                 }
             }
             .onChange(of: model.pendingUserText) { _, text in
-                guard text != nil, atBottom else { return }
-                withAnimation(.easeOut(duration: 0.15)) {
+                guard text != nil, !scrolledUp else { return }
+                DispatchQueue.main.async {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
             .onChange(of: model.liveText) { _, _ in
-                guard atBottom else { return }
+                guard !scrolledUp else { return }
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
             .onChange(of: model.liveReasoning) { _, _ in
-                guard atBottom else { return }
+                guard !scrolledUp else { return }
                 proxy.scrollTo("bottom", anchor: .bottom)
+            }
+            .onChange(of: footerHeight) { _, _ in
+                guard !scrolledUp else { return }
+                DispatchQueue.main.async {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
             }
         }
     }
@@ -165,8 +176,45 @@ struct ChatView: View {
             Composer(model: model, focused: $composerFocused)
         }
         .padding(.horizontal, 12)
-        .padding(.top, 12)
+        .padding(.top, 8)
         .padding(.bottom, 8)
-        .background(Color(.systemBackground))
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: FooterHeightKey.self,
+                    value: proxy.size.height
+                )
+            }
+        )
+    }
+}
+
+/// Distinguishes a reader scrolling up from the content growing: only the
+/// former stops auto-follow. Back to the bottom clears it.
+private struct ScrollUpTracker: ViewModifier {
+    @Binding var scrolledUp: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollGeometryChange(for: ScrollGeometry.self) { $0 } action: { old, new in
+                let distance = new.contentSize.height
+                    - (new.contentOffset.y + new.containerSize.height)
+                if new.contentOffset.y < old.contentOffset.y - 1, distance > 120 {
+                    scrolledUp = true
+                }
+                if distance <= 120 {
+                    scrolledUp = false
+                }
+            }
+        } else {
+            content
+        }
+    }
+}
+
+private struct FooterHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
