@@ -196,6 +196,30 @@ impl OpencodeClient {
                 if let Some(object) = message.as_object_mut() {
                     object.remove("snapshot");
                 }
+                // A tool result can carry the image it read as a `data:` URI
+                // (hundreds of KB each). Neither client renders it, and a page
+                // of 40 messages ballooned to several MB because of it.
+                let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) else {
+                    continue;
+                };
+                for part in parts {
+                    if part.get("type").and_then(Value::as_str) != Some("tool") {
+                        continue;
+                    }
+                    let Some(items) = part
+                        .get_mut("state")
+                        .and_then(|state| state.get_mut("content"))
+                        .and_then(Value::as_array_mut)
+                    else {
+                        continue;
+                    };
+                    for item in items {
+                        if let Some(object) = item.as_object_mut() {
+                            object.remove("uri");
+                            object.remove("data");
+                        }
+                    }
+                }
             }
         }
         Ok(value)

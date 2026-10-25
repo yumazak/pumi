@@ -138,7 +138,13 @@ struct ToolView: View {
     @State private var open = false
 
     private var result: String {
-        (part.state?.content ?? []).compactMap(\.text).joined(separator: "\n")
+        let text = (part.state?.content ?? []).compactMap(\.text)
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        if !text.isEmpty { return text }
+        return (part.state?.content ?? []).compactMap(\.name)
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
     }
 
     var body: some View {

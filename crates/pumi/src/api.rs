@@ -21,6 +21,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, broadcast};
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
+use tower_http::compression::CompressionLayer;
 
 use crate::opencode::OpencodeClient;
 use crate::push::{self, Notification, PushStore, Subscription};
@@ -94,11 +95,12 @@ impl AppState {
 /// Build the router. `static_dir` is served as a fallback when present (the
 /// built PWA); without it the API is all there is.
 pub fn router(state: AppState, static_dir: Option<PathBuf>) -> Router {
-    let app = Router::new()
+    // The JSON API is compressed; the SSE stream must not be, because
+    // compression buffers it and breaks the streaming.
+    let json_api = Router::new()
         .route("/api/sessions", get(oc_sessions))
         .route("/api/projects", get(oc_projects))
         .route("/api/skills", get(oc_skills))
-        .route("/api/events", get(oc_events))
         .route("/api/sessions/{id}/messages", get(oc_messages))
         .route(
             "/api/sessions/{id}",
@@ -122,6 +124,11 @@ pub fn router(state: AppState, static_dir: Option<PathBuf>) -> Router {
             "/api/sessions/{id}/forms/{form_id}/reply",
             post(oc_form_reply),
         )
+        .layer(CompressionLayer::new());
+
+    let app = Router::new()
+        .merge(json_api)
+        .route("/api/events", get(oc_events))
         .route("/api/push/key", get(push_key))
         .route("/api/push/subscribe", post(push_subscribe))
         .route("/api/push/test", post(push_test))

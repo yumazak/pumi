@@ -44,6 +44,7 @@ struct OcCursor: Decodable {
 struct OcToolContent: Decodable, Equatable {
     var type: String?
     var text: String?
+    var name: String?
 }
 
 struct OcToolState: Decodable, Equatable {
